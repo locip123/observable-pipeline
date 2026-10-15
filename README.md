@@ -8,9 +8,13 @@
 
 ## 项目演示
 
-[观看介绍视频（MP4，约 59 秒）](./assert/video.mp4)。视频展示了六步处理管线、素材变化、GPU 分配、Worker 动态流程与数据库活动记录。点击下方预览图也可打开视频。
+介绍视频约 59 秒，可直接在下方播放器观看。视频展示了六步处理管线、素材变化、GPU 分配、Worker 动态流程与数据库活动记录。
 
-[![任务工作台：六步动画素材处理管线、实时进度与暂停控制](./assert/demo1.png)](./assert/video.mp4)
+https://github.com/user-attachments/assets/605c4166-f4e4-4374-9240-2874e23b41f1
+
+[单独打开视频](https://github.com/user-attachments/assets/605c4166-f4e4-4374-9240-2874e23b41f1) · [下载原始 MP4](https://github.com/locip123/observable-pipeline/raw/refs/heads/main/assert/video.mp4)
+
+![任务工作台：六步动画素材处理管线、实时进度与暂停控制](./assert/demo1.png)
 
 工作台左侧创建与切换任务，主区域展示六个步骤的状态、完成数量、结果复用次数及执行尝试；任务运行中可以暂停、恢复或取消。
 
