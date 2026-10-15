@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from pipeline import execution as state
 from pipeline import storage
@@ -25,7 +26,14 @@ def run_step(work, memory, memory_lock):
 
     def update(**values):
         with memory_lock:
-            memory[sid] = {**memory.get(sid, {}), **values}
+            previous = memory.get(sid, {})
+            # A bounded telemetry trail keeps short phases visible between UI polls.
+            # This is observational only; recovery still uses committed checkpoints.
+            if "phase" in values and values["phase"] != previous.get("phase"):
+                values["phase_history"] = [*previous.get("phase_history", []), {
+                    "phase": values["phase"], "at": datetime.now(timezone.utc).isoformat(),
+                }][-24:]
+            memory[sid] = {**previous, **values}
 
     update(task_id=work["task_id"], step_id=sid, attempt_id=work["attempt_id"], name=work["name"],
            progress=0, unit=0, phase="cache_check", device=None, buffer_frames=0)
@@ -38,14 +46,17 @@ def run_step(work, memory, memory_lock):
             return
         cached = work["cached"]
         if work["use_cache"] and cached and storage.valid(cached["path"], cached["checksum"]):
+            update(phase="cache_hit")
             state.complete(work, {k: cached[k] for k in ("path", "checksum", "size_bytes")}, cached["reused_from"])
             return
         output = storage.svg_output(work["order"], work["key"], work["style"])
         output_path = f"results/{work['key']}.svg"
         computed = (work["checkpoint"] or {}).get("unit") == 20
         if (work["use_cache"] or computed) and storage.valid(output_path, storage.digest(output)):
+            update(phase="cache_hit")
             state.complete(work, {"path": output_path, "checksum": storage.digest(output), "size_bytes": len(output)}, "orphan-output")
             return
+        update(phase="checkpoint_check")
         cp = work["checkpoint"]
         unit = cp["unit"] if cp and cp.get("cache_key") == work["key"] and storage.valid(cp["path"], cp["checksum"]) else 0
         if cp and not unit and not state.pulse(work, reset_checkpoint=True):
@@ -74,11 +85,14 @@ def run_step(work, memory, memory_lock):
                 time.sleep(min(0.4, max(0.01, unit_seconds - (time.monotonic() - started))))
             update(unit=next_unit, progress=next_unit / 20, buffer_frames=next_unit % 4)
             if next_unit % 4 == 0:
+                update(phase="checkpoint_save")
                 cp = storage.checkpoint(sid, work["attempt_id"], next_unit, work["key"])
                 if not state.pulse(work, checkpoint=cp):
                     return
+                update(phase="computing")
         update(phase="publishing", buffer_frames=0)
         artifact = storage.publish(output_path, output)
+        update(phase="committing")
         state.complete(work, artifact)
     except Exception as exc:
         log.exception("Step %s failed", sid)

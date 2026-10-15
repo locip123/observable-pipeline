@@ -4,6 +4,7 @@ import type { Activity, Snapshot, System, Task, TaskSummary, StatusEvent } from 
 import { labels, timeLabel } from './types'
 import { PipelineView } from './components/PipelineView'
 import { ResourcePanel } from './components/ResourcePanel'
+import { WorkerFlowPanel } from './components/WorkerFlowPanel'
 import { DataPanel } from './components/DataPanel'
 import { EventLog } from './components/EventLog'
 import { FoxScene } from './components/FlowLab'
@@ -21,7 +22,7 @@ export default function App() {
   const [name, setName] = useState('星轨小狐狸')
   const [style, setStyle] = useState('violet')
   const [scale, setScale] = useState(1)
-  const [useCache, setUseCache] = useState(true)
+  const [useCache, setUseCache] = useState(false)
   const [revision, setRevision] = useState(0)
   const [tab, setTab] = useState('overview')
 
@@ -112,7 +113,7 @@ export default function App() {
       {!selected && <div className="welcome panel"><span className="eyebrow">LONG-RUNNING TASKS, MADE VISIBLE</span><h1>每一步，都有迹可循。</h1><p>从一只 SVG 小狐狸开始，探索长任务的执行、恢复与结果复用。</p><FoxScene active stage={5}/><button className="primary" disabled={busy || !name.trim()} onClick={create}>创建第一个任务 →</button></div>}
       {selected && !current && <div className="loading-state">正在读取 PostgreSQL 快照…</div>}
       {current && <><div className="workspace-tabs"><div role="tablist" aria-label="工作区视图">{[['overview', '流程总览'], ['state', '数据与内存'], ['history', '执行历史']].map(([key, label]) => <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>{label}</button>)}</div><button className="quiet" disabled={busy || !current.task.steps.some(s => s.status === 'completed')} onClick={reuse}>↗ 相同输入再运行 · 验证复用</button></div>
-        {tab === 'overview' && <><PipelineView key={current.task.id} task={current.task} system={current.system} act={act} busy={busy}/><ResourcePanel system={current.system} steps={current.task.steps}/></>}
+        {tab === 'overview' && <><PipelineView key={current.task.id} task={current.task} system={current.system} act={act} busy={busy}/><ResourcePanel system={current.system} steps={current.task.steps}/><WorkerFlowPanel key={current.task.id} snapshot={current} connected={!connectionError}/></>}
       </>}
       {system && <div hidden={tab === 'history'}><DataPanel activity={activity} system={system} selected={selected} choose={choose} act={act} busy={busy}/></div>}
       {current && <>{(tab === 'overview' || tab === 'history') && <EventLog events={events} total={current.counts.status_events} busy={busy} loadMore={() => act(async () => {

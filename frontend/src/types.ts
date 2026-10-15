@@ -94,6 +94,7 @@ export interface Runtime {
   unit: number
   device: string | null
   buffer_frames: number
+  phase_history?: { phase: string; at: string }[]
 }
 export interface Worker {
   id: string
@@ -147,5 +148,6 @@ export const labels: Record<string, string> = {
   waiting_resource: '等待 GPU', retry_wait: '等待重试', succeeded: '成功', interrupted: '中断',
   waiting: '排队', allocating: '加载模型', allocated: '已分配', released: '已释放',
   computing: '计算中', publishing: '发布产物', cache_check: '检查缓存',
+  cache_hit: '复用已验证产物', checkpoint_check: '校验检查点', checkpoint_save: '保存检查点', committing: '提交成功状态',
 }
 export const timeLabel = (value: string | null) => value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—'

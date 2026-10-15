@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 import uuid
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
@@ -81,6 +82,43 @@ class PipelineTests(unittest.TestCase):
         page = self.client.get(f"/api/tasks/{task['id']}/events?limit=2").json()
         older = self.client.get(f"/api/tasks/{task['id']}/events?before={page[-1]['sequence']}&limit=2").json()
         self.assertGreater(page[-1]["sequence"], older[0]["sequence"])
+
+    def test_worker_phase_telemetry_tracks_real_io_and_is_bounded(self):
+        task = self.create()
+        work = state.claim("test-worker")
+        memory = {}
+        saved_units = []
+        checkpoint = storage.checkpoint
+        publish = storage.publish
+        complete = state.complete
+
+        def observe_checkpoint(*args):
+            runtime = memory[work["step_id"]]
+            self.assertEqual(runtime["phase"], "checkpoint_save")
+            saved_units.append(args[2])
+            return checkpoint(*args)
+
+        def observe_publish(*args):
+            expected = "checkpoint_save" if args[0].startswith("checkpoints/") else "publishing"
+            self.assertEqual(memory[work["step_id"]]["phase"], expected)
+            return publish(*args)
+
+        def observe_complete(*args):
+            runtime = memory[work["step_id"]]
+            self.assertEqual(runtime["phase"], "committing")
+            phases = [entry["phase"] for entry in runtime["phase_history"]]
+            self.assertEqual(phases[:3], ["cache_check", "checkpoint_check", "computing"])
+            self.assertEqual(phases.count("checkpoint_save"), 5)
+            self.assertLessEqual(len(phases), 24)
+            return complete(*args)
+
+        with patch.object(storage, "checkpoint", side_effect=observe_checkpoint), \
+                patch.object(storage, "publish", side_effect=observe_publish), \
+                patch.object(state, "complete", side_effect=observe_complete):
+            run_step(work, memory, threading.Lock())
+        self.assertEqual(saved_units, [4, 8, 12, 16, 20])
+        self.assertFalse(memory)
+        self.assertEqual(self.task(task["id"])["steps"][0]["status"], "completed")
 
     def test_activity_tables_include_all_active_tasks_and_retain_history(self):
         first = self.create()
