@@ -29,15 +29,24 @@ services:
       - artifacts:/artifacts
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
 
   worker:
     build: ./backend
+    restart: unless-stopped
     command: ["python", "-m", "pipeline.worker"]
     environment:
       DATABASE_URL: postgresql+psycopg://pipeline:pipeline@db:5432/pipeline
       ARTIFACT_DIR: /artifacts
     depends_on:
       db:
+        condition: service_healthy
+      api:
         condition: service_healthy
     volumes:
       - artifacts:/artifacts

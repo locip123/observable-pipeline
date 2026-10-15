@@ -1,0 +1,99 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "调试：创建 Python 环境",
+      "type": "process",
+      "command": "python",
+      "args": ["-m", "venv", "${workspaceFolder}/.venv"],
+      "problemMatcher": []
+    },
+    {
+      "label": "调试：安装后端依赖",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["-m", "pip", "install", "-e", "${workspaceFolder}/backend"],
+      "dependsOn": "调试：创建 Python 环境",
+      "problemMatcher": []
+    },
+    {
+      "label": "调试：安装前端依赖",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": ["ci"],
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "调试：初始化依赖",
+      "dependsOn": ["调试：安装后端依赖", "调试：安装前端依赖"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "调试：启动数据库",
+      "type": "process",
+      "command": "docker",
+      "args": ["compose", "up", "-d", "--wait", "db"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "调试：准备后端",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["-m", "alembic", "upgrade", "head"],
+      "options": {
+        "cwd": "${workspaceFolder}/backend",
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://pipeline:pipeline@127.0.0.1:5432/pipeline",
+          "PYTHONUTF8": "1"
+        }
+      },
+      "dependsOn": "调试：启动数据库",
+      "problemMatcher": []
+    },
+    {
+      "label": "调试：启动前端",
+      "type": "shell",
+      "command": "npm.cmd",
+      "args": [
+        "run",
+        "dev",
+        "--",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5174",
+        "--strictPort"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/frontend",
+        "env": {
+          "VITE_API_PROXY_TARGET": "http://127.0.0.1:8000",
+          "NO_COLOR": "1"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": {
+          "regexp": "^(.+):(\\d+):(\\d+): (.+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE.*ready",
+          "endsPattern": "Local:\\s+http://127\\.0\\.0\\.1:5174/"
+        }
+      }
+    }
+  ]
+}

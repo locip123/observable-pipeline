@@ -2,6 +2,8 @@
 
 调研日期：2026-10-13。目标是动画素材处理的长任务 MVP：步骤失败或进程中断后恢复、步骤状态和历史、结果复用、小时级扩展，以及 GPU 调度与可观测。下文只引用项目仓库、官方文档和规范；“建议”是基于这些资料对本题的推论。
 
+实现选型保持 PostgreSQL 16，默认一个 Worker 执行进程与一个 MOCK GPU 名额。最新实现、状态与故障语义见 [设计说明](./DESIGN.md)，本文保留开源方案参考。
+
 ## 值得参考的开源项目
 
 | 项目 | 与题 D 直接相关的能力 | 本题可借鉴之处与边界 | 许可证、维护情况 |
@@ -22,13 +24,19 @@
 | 层 | 技术 | 本题中的职责 |
 | --- | --- | --- |
 | API | Python + FastAPI + Pydantic | 提交任务、查询任务/步骤/尝试历史、手动重试；HTTP 请求只写入任务，不执行耗时步骤。FastAPI 官方文档也将重计算列为适合独立进程的场景。[Background Tasks 说明](https://fastapi.tiangolo.com/tutorial/background-tasks/) |
-| 状态与小规模队列 | PostgreSQL + SQLAlchemy/Alembic | 持久化 `jobs`、`step_runs`、`step_attempts`、追加式 `events` 和 `artifacts`。Worker 用短事务领取待执行步骤；PostgreSQL 官方明确 `FOR UPDATE SKIP LOCKED` 适合减少队列式表的多消费者锁竞争。[SELECT 文档](https://www.postgresql.org/docs/current/sql-select.html) |
+| 状态与小规模队列 | PostgreSQL + SQLAlchemy/Alembic | 持久化任务、步骤、尝试、追加式事件和产物元数据。API 与 Worker 通过短事务、行锁和租约协调，数据库为业务状态真相源。[行锁与 SKIP LOCKED](https://www.postgresql.org/docs/16/sql-select.html) |
 | 执行 | 单独的 Python Worker 进程 | 执行可配置耗时/失败的 MOCK 步骤；领取步骤时写入租约与 `owner_token`，运行中续租，租约过期后重新领取。GPU 步骤用独立资源类型和并发名额模拟等待。 |
 | 产物 | 持久化本地目录，扩展时改为共享对象存储 | 保存抽帧、生成帧、合成文件等产物；数据库只记 URI、校验摘要和复用指纹。跨主机执行前须改为共享存储。 |
 | 页面 | React + TypeScript + Vite | 任务列表、步骤拓扑/时间线、每次尝试、错误和产物；每 1–2 秒轮询状态即可演示。 |
-| 运行 | Docker Compose | 启动 API、Worker、PostgreSQL 和页面；为数据库及产物目录挂持久卷。 |
+| 运行 | Docker Compose | 启动 PostgreSQL、API、Worker 和页面四个服务；数据库使用 `postgres_data` 卷，API 与 Worker 共享 `artifacts` 产物卷。 |
 
-这套组合刻意让业务状态和恢复规则可见。步骤的 `READY → RUNNING → SUCCEEDED`、`RUNNING → RETRY_WAIT → READY`、`RUNNING → FAILED` 应写入事件历史；任务状态由步骤聚合。领取后立即提交事务，不把数据库锁保持到整个耗时计算结束。Worker 完成时按 `step_run_id + owner_token + attempt_no` 条件提交结果，防止租约已过期的旧 Worker 覆盖新尝试。进程崩溃后，租约过期只重跑未成功的步骤；已成功步骤用持久化产物继续。若步骤有外部副作用，还须让副作用本身接受稳定幂等键，不能只靠数据库令牌防重复。这里的租约、令牌和状态机是本题的实现建议，而非 PostgreSQL 自动提供的工作流语义。
+#### PostgreSQL 的存储与事务约定
+
+- **部署与持久化**：独立 PostgreSQL 服务与持久卷，API 和 Worker 使用同一个数据库地址，Alembic 先于 Worker 启动完成迁移。
+- **领取步骤**：在短事务内用 `FOR UPDATE SKIP LOCKED` 领取可执行任务，检查依赖，并原子写入步骤运行状态、attempt、owner token、租约和事件。计算在事务提交后执行。[锁定子句](https://www.postgresql.org/docs/16/sql-select.html)
+- **写入与回收**：心跳和结果提交校验执行资格与数据库租约；恢复扫描重新持锁确认过期，再中断尝试、释放设备、安排重试。文件发布不占用计算事务，状态与对应事件保持同事务提交。详细锁顺序和失败场景见 [设计说明](./DESIGN.md)。
+
+这套组合刻意让业务状态和恢复规则可见。步骤的 `READY → RUNNING → SUCCEEDED`、`RUNNING → RETRY_WAIT → READY`、`RUNNING → FAILED` 应写入事件历史；任务状态由步骤聚合。Worker 续租或提交结果时，以 `step_run_id + owner_token + attempt_no`、当前 `RUNNING` 状态及租约仍有效作为更新条件，并检查更新行数，防止失去租约的旧 Worker 提交结果。进程崩溃后，Worker 在短事务中将租约过期的尝试记为中断、写入恢复事件，并按重试策略使未成功步骤重新就绪；已成功步骤用持久化产物继续。若步骤有外部副作用，还须让副作用本身接受稳定幂等键，不能只靠数据库令牌防重复。这里的租约、令牌和状态机是本题的实现建议，而非 PostgreSQL 自动提供的工作流语义。
 
 结果复用键建议计算为 `hash(步骤名 + 输入产物摘要 + 参数 + 代码/模型版本)`。命中时验证产物仍存在且摘要匹配，再把本次步骤标为成功并记录 `reused_from`；发布产物先写临时位置，再原子改名或完成对象写入，最后提交成功状态。这样“产物已写入但数据库尚未提交”可在重试时检测并复用；“数据库显示成功但产物缺失”应视为损坏，禁止错误命中。步骤重试和整个新任务的跨运行复用都由这一规则覆盖。[Prefect 缓存设计参考](https://github.com/PrefectHQ/prefect/blob/main/docs/v3/concepts/caching.mdx)
 
@@ -39,6 +47,7 @@
 1. **时间紧且允许引入工作流框架**：Prefect 3 + 自托管 UI 能较快给出步骤状态、日志、重试、缓存和并发限制；仍需定义动画素材的步骤边界、缓存键、产物持久化和 GPU 占用策略。Prefect 默认把结果存在本机 `~/.prefect/storage/`，跨机器 Worker 可靠复用要配置共享持久存储。[Prefect 缓存](https://github.com/PrefectHQ/prefect/blob/main/docs/v3/concepts/caching.mdx)
 2. **小时级/GPU 扩展**：把长步骤拆成可提交检查点的独立步骤（例如抽帧、逐帧生成、合成），记录 heartbeat/进度和租约到期，重启时只重跑未产出可验证结果的步骤；GPU Worker 队列按资源类型隔离，显示排队时长、分配设备、运行时长和 GPU 指标。Temporal 的 heartbeat 与 Ray 的资源准入提供两种参考；NVIDIA [DCGM Exporter](https://docs.nvidia.com/datacenter/cloud-native/gpu-telemetry/latest/)可供真实 GPU 环境导出 Prometheus 指标。[Temporal heartbeat](https://docs.temporal.io/encyclopedia/detecting-activity-failures) · [Ray 资源](https://docs.ray.io/en/latest/ray-core/scheduling/resources.html)
 3. **可观测数据分层**：数据库中的状态/尝试/产物引用负责恢复和上游查询；结构化日志用于逐步排障；低基数指标统计队列等待、步骤耗时、失败率、重试率、GPU 利用率；trace/span 关联一次任务及其步骤。OpenTelemetry 规范支持用 TraceId/SpanId 关联日志与追踪；Prometheus 每种 label 值组合会生成新时间序列，因此 `job_id`/`step_run_id` 更适合日志和 trace 属性，不宜做指标 label。[OTel 日志模型](https://opentelemetry.io/docs/specs/otel/logs/data-model/) · [上下文传播](https://opentelemetry.io/docs/concepts/context-propagation/) · [Prometheus 数据模型](https://prometheus.io/docs/concepts/data_model/)
+4. **数据库扩展边界**：继续使用 PostgreSQL；任务变长时保持事务短暂，按需加入分批领取、到期扫描索引、事件归档和共享对象存储。跨主机 Worker 还需节点与设备归属，不能仅把本地 GPU 名额表视为真实跨机调度器。
 
 ## 技术选择的判断
 
@@ -48,6 +57,6 @@
 
 **LangChain** 主要提供模型、工具和 Agent 循环的抽象；题 D 不要求真实 LLM 调用，固定的动画处理步骤因此不需要它。**LangGraph** 可以单独使用而无需 LangChain，它支持确定性步骤与 Agent 步骤混合、图状态 checkpoint 和故障后恢复，因此是合理备选，而不是本题的必需依赖。[LangGraph 官方概览](https://docs.langchain.com/oss/python/langgraph/overview)
 
-若选择 LangGraph，应使用持久化的 `PostgresSaver`（内存 checkpointer 在进程重启后会丢失），并按可靠性要求选 `durability="sync"`；官方文档指出 `async` 模式在崩溃时有少量丢 checkpoint 的风险，`exit` 模式无法从运行中崩溃恢复。恢复以节点边界为单位：长 GPU 节点执行中崩溃会从该节点开头重跑；节点内检查点、外部副作用幂等和跨任务产物缓存仍由应用设计。GPU 名额/设备调度、任务与步骤的业务状态以及上游页面也仍需单独实现。这些是结合题目范围的设计推论。[Checkpointers 与持久化模式](https://docs.langchain.com/oss/python/langgraph/checkpointers) · [持久化存储选择](https://docs.langchain.com/oss/python/langgraph/persistence) · [LangGraph 步骤粒度与缓存边界](https://docs.langchain.com/oss/javascript/langgraph/thinking-in-langgraph)
+若选择 LangGraph，可选择 PostgreSQL 持久化 checkpointer（内存 checkpointer 在进程重启后会丢失），并按可靠性要求选 `durability="sync"`；官方文档指出 `async` 模式在崩溃时有少量丢 checkpoint 的风险，`exit` 模式无法从运行中崩溃恢复。恢复以节点边界为单位：长 GPU 节点执行中崩溃会从该节点开头重跑；节点内检查点、外部副作用幂等和跨任务产物缓存仍由应用设计。GPU 名额/设备调度、任务与步骤的业务状态以及上游页面也仍需单独实现。这些是结合题目范围的设计推论。[Checkpointers 与持久化模式](https://docs.langchain.com/oss/python/langgraph/checkpointers) · [持久化存储选择](https://docs.langchain.com/oss/python/langgraph/persistence) · [LangGraph 步骤粒度与缓存边界](https://docs.langchain.com/oss/javascript/langgraph/thinking-in-langgraph)
 
-因此，**固定管线 + MOCK AI** 延续上面的 PostgreSQL 状态机方案；若未来要做 LLM 动态决策、工具调用或人工介入，可把该 Agent 子流程放在 LangGraph，外层任务/产物/GPU 调度仍保持清晰的业务模型。[LangGraph 官方概览](https://docs.langchain.com/oss/python/langgraph/overview)
+因此，**固定管线 + MOCK AI** 采用上面的 PostgreSQL 状态机方案；若未来要做 LLM 动态决策、工具调用或人工介入，可把该 Agent 子流程放在 LangGraph，外层任务/产物/GPU 调度仍保持清晰的业务模型。[LangGraph 官方概览](https://docs.langchain.com/oss/python/langgraph/overview)

@@ -4,6 +4,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 from pipeline.db import Base
+import pipeline.models  # noqa: F401 — registers ORM models with Base.metadata
 
 target_metadata = Base.metadata
 

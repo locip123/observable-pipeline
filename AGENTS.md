@@ -15,4 +15,6 @@
 
 API 与 Worker 使用同一个 `backend` Python 包，通过 PostgreSQL 协调，不通过进程内队列共享状态。未来的 GPU 步骤以资源需求和 Worker 名额表达，状态界面需呈现等待、分配与执行信息。
 
-当前只有可启动骨架、空迁移脚手架和 `/api/health`；尚无任务表、调度器、状态机、重试、缓存或业务页面。新增 ORM 模型后，在 `migrations/env.py` 导入其模块以供 Alembic 识别。新增功能时保持 API 请求短暂、Worker 可重启，并让状态变化与执行历史可查询。
+当前已实现六步 SVG MOCK 管线、检查点、租约恢复、重试、产物复用与 GPU 名额。修改状态流转、恢复或产物发布时，先读 [设计说明](./DESIGN.md)。事务逻辑集中在 `pipeline.execution`，执行与监督进程在 `pipeline.worker.runtime`，文件发布在 `pipeline.storage`。
+
+新增 ORM 模型后，在 `migrations/env.py` 导入其模块以供 Alembic 识别。新增功能时保持 API 请求短暂、Worker 可重启，并让状态变化与执行历史可查询。集成测试使用独立 PostgreSQL 库 `pipeline_mvp_test`，会清空测试业务表；运行命令见 README。

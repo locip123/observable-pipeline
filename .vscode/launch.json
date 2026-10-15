@@ -1,0 +1,71 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API（环境已准备）",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "module": "uvicorn",
+      "args": [
+        "pipeline.api.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ],
+      "cwd": "${workspaceFolder}/backend",
+      "env": {
+        "DATABASE_URL": "postgresql+psycopg://pipeline:pipeline@127.0.0.1:5432/pipeline",
+        "ARTIFACT_DIR": "${workspaceFolder}/artifacts",
+        "PYTHONUTF8": "1"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Worker（环境已准备）",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "module": "pipeline.worker",
+      "cwd": "${workspaceFolder}/backend",
+      "env": {
+        "DATABASE_URL": "postgresql+psycopg://pipeline:pipeline@127.0.0.1:5432/pipeline",
+        "ARTIFACT_DIR": "${workspaceFolder}/artifacts",
+        "PYTHONUTF8": "1"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "前端（Edge）",
+      "type": "msedge",
+      "request": "launch",
+      "url": "http://127.0.0.1:5174",
+      "webRoot": "${workspaceFolder}/frontend",
+      "preLaunchTask": "调试：启动前端"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "全栈调试（API + Worker + 前端）",
+      "configurations": [
+        "API（环境已准备）",
+        "Worker（环境已准备）",
+        "前端（Edge）"
+      ],
+      "preLaunchTask": "调试：准备后端",
+      "stopAll": true
+    },
+    {
+      "name": "后端调试（API + Worker）",
+      "configurations": [
+        "API（环境已准备）",
+        "Worker（环境已准备）"
+      ],
+      "preLaunchTask": "调试：准备后端",
+      "stopAll": true
+    }
+  ]
+}

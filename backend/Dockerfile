@@ -5,6 +5,7 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY alembic.ini ./
 COPY migrations ./migrations
-RUN pip install --no-cache-dir .
+COPY entrypoint.sh ./entrypoint.sh
+RUN pip install --no-cache-dir . && chmod +x entrypoint.sh
 
-CMD ["uvicorn", "pipeline.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["./entrypoint.sh"]
